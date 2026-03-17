@@ -1,7 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NmapControlPlaneClient } from '../src/client';
-import { event_envelope_t } from '../src/types';
+import { event_envelope_t, websocket_tls_settings_t } from '../src/types';
+
+function BuildTlsSettings(): websocket_tls_settings_t {
+    return {
+        reject_unauthorized_tls: process.env.NMAP_CP_TLS_INSECURE !== '1',
+        ca_file: process.env.NMAP_CP_TLS_CA_FILE,
+        client_cert_file: process.env.NMAP_CP_TLS_CLIENT_CERT_FILE,
+        client_key_file: process.env.NMAP_CP_TLS_CLIENT_KEY_FILE,
+        server_name: process.env.NMAP_CP_TLS_SERVER_NAME
+    };
+}
 
 test('Integration: findings stream before terminal event', { timeout: 120_000 }, async (t) => {
     const base_url = process.env.NMAP_CP_URL ?? '';
@@ -18,7 +28,8 @@ test('Integration: findings stream before terminal event', { timeout: 120_000 },
         base_url,
         auth_token,
         allow_insecure_ws,
-        request_timeout_ms: 60_000
+        request_timeout_ms: 60_000,
+        websocket_tls_settings: BuildTlsSettings()
     });
 
     const observed_events: event_envelope_t[] = [];

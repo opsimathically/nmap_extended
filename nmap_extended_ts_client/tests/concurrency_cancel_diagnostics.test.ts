@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NmapControlPlaneClient } from '../src/client';
+import { websocket_tls_settings_t } from '../src/types';
 
 type integration_env_t = {
     base_url: string;
@@ -22,6 +23,16 @@ function SleepMs(params: { duration_ms: number }): Promise<void> {
     });
 }
 
+function BuildTlsSettings(): websocket_tls_settings_t {
+    return {
+        reject_unauthorized_tls: process.env.NMAP_CP_TLS_INSECURE !== '1',
+        ca_file: process.env.NMAP_CP_TLS_CA_FILE,
+        client_cert_file: process.env.NMAP_CP_TLS_CLIENT_CERT_FILE,
+        client_key_file: process.env.NMAP_CP_TLS_CLIENT_KEY_FILE,
+        server_name: process.env.NMAP_CP_TLS_SERVER_NAME
+    };
+}
+
 test('Integration: concurrent scheduling and queued cancel diagnostics', { timeout: 180_000 }, async (t) => {
     const env = GetIntegrationEnv();
     if (!env.base_url || !env.auth_token) {
@@ -34,7 +45,8 @@ test('Integration: concurrent scheduling and queued cancel diagnostics', { timeo
         base_url: env.base_url,
         auth_token: env.auth_token,
         allow_insecure_ws,
-        request_timeout_ms: 90_000
+        request_timeout_ms: 90_000,
+        websocket_tls_settings: BuildTlsSettings()
     });
 
     const scan_args = ['-n', '-Pn', '-sT', '-p', '22', env.scan_target];

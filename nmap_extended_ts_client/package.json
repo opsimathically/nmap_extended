@@ -60,6 +60,7 @@
     "check:api": "npm run build:sdk && api-extractor run --config ./api-extractor.json --verbose",
     "check:api:update": "npm run build:sdk && api-extractor run --config ./api-extractor.json --local",
     "pack:smoke": "npm run build:sdk && npm pack --dry-run",
+    "fuzz:websocket-api": "npm run build:tests && node dist-tests/tests/websocket_api_fuzz_runner.js",
     "release:prepare": "npm run preflight:sdk && npm run build && npm run typecheck && npm run test && npm run check:api && npm run pack:smoke && changeset version",
     "changeset": "changeset",
     "version-packages": "changeset version",

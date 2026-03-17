@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import { readFileSync } from 'node:fs';
 import { ControlPlaneClientError } from './errors';
 import {
     connection_state_t,
@@ -17,6 +18,17 @@ const default_reconnect_settings: reconnect_settings_t = {
 const default_websocket_tls_settings: websocket_tls_settings_t = {
     reject_unauthorized_tls: true
 };
+
+function ReadFileOrThrow(params: { file_path: string; label: string }): Buffer {
+    try {
+        return readFileSync(params.file_path);
+    } catch {
+        throw new ControlPlaneClientError({
+            code: 'tls_material_load_failed',
+            message: `Failed to load ${params.label} from ${params.file_path}`
+        });
+    }
+}
 
 export class WebsocketTransport {
     private readonly websocket_url: string;
@@ -69,10 +81,16 @@ export class WebsocketTransport {
         this.should_reconnect = this.reconnect_settings.enabled;
         this.state = 'connecting';
 
+        let websocket_options: WebSocket.ClientOptions;
+        try {
+            websocket_options = this.buildWebsocketOptions();
+        } catch (error) {
+            this.state = 'disconnected';
+            return Promise.reject(error);
+        }
+
         this.connect_promise = new Promise<void>((resolve, reject) => {
-            this.ws_client = new WebSocket(this.websocket_url, {
-                rejectUnauthorized: this.websocket_tls_settings.reject_unauthorized_tls
-            });
+            this.ws_client = new WebSocket(this.websocket_url, websocket_options);
 
             this.ws_client.on('open', () => {
                 this.state = 'connected';
@@ -169,5 +187,48 @@ export class WebsocketTransport {
         const jitter_window = exponential_delay * this.reconnect_settings.jitter_ratio;
         const jitter = (Math.random() * 2 - 1) * jitter_window;
         return Math.max(50, Math.floor(exponential_delay + jitter));
+    }
+
+    private buildWebsocketOptions(): WebSocket.ClientOptions {
+        const has_client_cert = typeof this.websocket_tls_settings.client_cert_file === 'string';
+        const has_client_key = typeof this.websocket_tls_settings.client_key_file === 'string';
+        if (has_client_cert !== has_client_key) {
+            throw new ControlPlaneClientError({
+                code: 'invalid_tls_client_auth',
+                message: 'client_cert_file and client_key_file must be provided together'
+            });
+        }
+
+        const options: WebSocket.ClientOptions = {
+            rejectUnauthorized: this.websocket_tls_settings.reject_unauthorized_tls
+        };
+
+        if (this.websocket_tls_settings.ca_file) {
+            options.ca = ReadFileOrThrow({
+                file_path: this.websocket_tls_settings.ca_file,
+                label: 'ca_file'
+            });
+        }
+
+        if (this.websocket_tls_settings.client_cert_file) {
+            options.cert = ReadFileOrThrow({
+                file_path: this.websocket_tls_settings.client_cert_file,
+                label: 'client_cert_file'
+            });
+        }
+
+        if (this.websocket_tls_settings.client_key_file) {
+            options.key = ReadFileOrThrow({
+                file_path: this.websocket_tls_settings.client_key_file,
+                label: 'client_key_file'
+            });
+        }
+
+        if (this.websocket_tls_settings.server_name) {
+            (options as WebSocket.ClientOptions & { servername?: string }).servername =
+                this.websocket_tls_settings.server_name;
+        }
+
+        return options;
     }
 }

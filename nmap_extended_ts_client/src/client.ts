@@ -32,6 +32,7 @@ type pending_request_t = {
 export class NmapControlPlaneClient {
     private readonly websocket_url: string;
     private readonly request_timeout_ms: number;
+    private readonly websocket_tls_settings: client_settings_t['websocket_tls_settings'];
 
     private readonly command_transport: WebsocketTransport;
     private readonly pending_requests: Map<string, pending_request_t>;
@@ -52,6 +53,7 @@ export class NmapControlPlaneClient {
         });
 
         this.request_timeout_ms = params.request_timeout_ms ?? 15_000;
+        this.websocket_tls_settings = params.websocket_tls_settings;
         this.pending_requests = new Map<string, pending_request_t>();
         this.event_handlers = new Set<event_handler_t>();
         this.job_last_event_id = new Map<string, number>();
@@ -60,7 +62,7 @@ export class NmapControlPlaneClient {
         this.command_transport = new WebsocketTransport({
             websocket_url: this.websocket_url,
             reconnect_settings: params.reconnect_settings,
-            websocket_tls_settings: params.websocket_tls_settings
+            websocket_tls_settings: this.websocket_tls_settings
         });
 
         this.command_transport.setHandlers({
@@ -244,7 +246,8 @@ export class NmapControlPlaneClient {
                 initial_delay_ms: 100,
                 max_delay_ms: 200,
                 jitter_ratio: 0
-            }
+            },
+            websocket_tls_settings: this.websocket_tls_settings
         });
 
         return new Promise<void>((resolve, reject) => {

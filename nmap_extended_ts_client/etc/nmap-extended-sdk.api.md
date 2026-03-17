@@ -60,6 +60,20 @@ export type daemon_limits_t = {
     max_active_scans: number;
     cancel_grace_ms: number;
     auth_provider: string;
+    tls_enabled: boolean;
+    tls_require_client_cert: boolean;
+    tls_min_tls_version: string;
+};
+
+// @public (undocumented)
+export type daemon_transport_t = {
+    mode: 'ws' | 'wss';
+    tls_enabled: boolean;
+    require_client_cert: boolean;
+    min_tls_version: string;
+    cert_material_loaded: boolean;
+    ca_configured: boolean;
+    allow_insecure_remote_ws: boolean;
 };
 
 // @public (undocumented)
@@ -82,6 +96,8 @@ export type get_capabilities_payload_t = {
     commands: string[];
     max_concurrent_scans: number;
     event_delivery: string;
+    wss_supported: boolean;
+    mtls_supported: boolean;
 };
 
 // @public (undocumented)
@@ -97,6 +113,7 @@ export type get_daemon_diagnostics_response_payload_t = {
     total_jobs: number;
     websocket_sessions: number;
     limits: daemon_limits_t;
+    transport: daemon_transport_t;
     counters: daemon_counters_t;
 };
 
@@ -278,6 +295,10 @@ export interface transport_handlers_i {
 // @public (undocumented)
 export type websocket_tls_settings_t = {
     reject_unauthorized_tls: boolean;
+    ca_file?: string;
+    client_cert_file?: string;
+    client_key_file?: string;
+    server_name?: string;
 };
 
 // (No @packageDocumentation comment for this package)

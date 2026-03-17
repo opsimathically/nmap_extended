@@ -55,9 +55,15 @@ PORTABLE_LDFLAGS = $(LDFLAGS) -static-libstdc++ -static-libgcc
 PORTABLE_LIBS = $(filter-out -libverbs,$(LIBS))
 PORTABLE_CONTROL_PLANE_LIBS = -Wl,-Bstatic -lboost_json -Wl,-Bdynamic -lpthread
 VALGRIND_GATE_SCRIPT = ./packaging/valgrind/run_valgrind_gate.sh
+VALGRIND_FUZZ_GATE_SCRIPT = ./packaging/valgrind/run_valgrind_fuzz_gate.sh
 VALGRIND_SUPPRESSIONS = ./packaging/valgrind/nmap_extended.supp
 VALGRIND_LOG_DIR = ./dist/valgrind
 VALGRIND_SMOKE_TARGETS = 192.168.11.7,192.168.11.1,192.168.11.255
+VALGRIND_FUZZ_SCAN_TARGET = 192.168.11.1/24
+VALGRIND_FUZZ_PR_ITERATIONS = 280
+VALGRIND_FUZZ_PR_TIME_BUDGET_MS = 55000
+VALGRIND_FUZZ_NIGHTLY_ITERATIONS = 1500
+VALGRIND_FUZZ_NIGHTLY_TIME_BUDGET_MS = 300000
 ARTIFACT_HYGIENE_SCRIPT = ./packaging/ci/check_artifact_hygiene.sh
 OPENSSL_LIBS = @OPENSSL_LIBS@
 LIBSSH2_LIBS = @LIBSSH2_LIBS@
@@ -253,6 +259,23 @@ preflight-valgrind:
 	fi
 	@echo "Valgrind preflight checks passed."
 
+preflight-fuzz-valgrind: preflight-valgrind
+	@missing_tools=""; \
+	for cmd in openssl; do \
+		command -v "$$cmd" >/dev/null 2>&1 || missing_tools="$$missing_tools $$cmd"; \
+	done; \
+	if [ -n "$$missing_tools" ]; then \
+		echo "Missing required tools for websocket fuzz gate:$$missing_tools"; \
+		echo "Install required tools and rerun this target."; \
+		exit 2; \
+	fi
+	@if [ ! -x "$(VALGRIND_FUZZ_GATE_SCRIPT)" ]; then \
+		echo "Missing executable fuzz gate script: $(VALGRIND_FUZZ_GATE_SCRIPT)"; \
+		echo "Restore it and rerun."; \
+		exit 2; \
+	fi
+	@echo "Websocket fuzz valgrind preflight checks passed."
+
 check-valgrind-memcheck: build-daemon-portable preflight-valgrind
 	@mkdir -p "$(VALGRIND_LOG_DIR)"
 	VALGRIND_LOG_DIR="$(VALGRIND_LOG_DIR)/memcheck" \
@@ -269,6 +292,43 @@ check-valgrind-helgrind: build-daemon-portable preflight-valgrind
 
 check-valgrind: check-valgrind-memcheck check-valgrind-helgrind
 	@echo "Valgrind quality gate passed."
+
+check-fuzz-valgrind-memcheck: build-daemon-portable preflight-fuzz-valgrind
+	@mkdir -p "$(VALGRIND_LOG_DIR)"
+	VALGRIND_LOG_DIR="$(VALGRIND_LOG_DIR)/fuzz/pr/memcheck" \
+	VALGRIND_SUPPRESSIONS="$(VALGRIND_SUPPRESSIONS)" \
+	VALGRIND_FUZZ_SCAN_TARGET="$(VALGRIND_FUZZ_SCAN_TARGET)" \
+	VALGRIND_FUZZ_ITERATIONS="$(VALGRIND_FUZZ_PR_ITERATIONS)" \
+	VALGRIND_FUZZ_TIME_BUDGET_MS="$(VALGRIND_FUZZ_PR_TIME_BUDGET_MS)" \
+	"$(VALGRIND_FUZZ_GATE_SCRIPT)" memcheck pr
+
+check-fuzz-valgrind-helgrind: build-daemon-portable preflight-fuzz-valgrind
+	@mkdir -p "$(VALGRIND_LOG_DIR)"
+	VALGRIND_LOG_DIR="$(VALGRIND_LOG_DIR)/fuzz/pr/helgrind" \
+	VALGRIND_SUPPRESSIONS="$(VALGRIND_SUPPRESSIONS)" \
+	VALGRIND_FUZZ_SCAN_TARGET="$(VALGRIND_FUZZ_SCAN_TARGET)" \
+	VALGRIND_FUZZ_ITERATIONS="$(VALGRIND_FUZZ_PR_ITERATIONS)" \
+	VALGRIND_FUZZ_TIME_BUDGET_MS="$(VALGRIND_FUZZ_PR_TIME_BUDGET_MS)" \
+	"$(VALGRIND_FUZZ_GATE_SCRIPT)" helgrind pr
+
+check-fuzz-valgrind: check-fuzz-valgrind-memcheck check-fuzz-valgrind-helgrind
+	@echo "Websocket fuzz valgrind PR gate passed."
+
+check-fuzz-valgrind-nightly: build-daemon-portable preflight-fuzz-valgrind
+	@mkdir -p "$(VALGRIND_LOG_DIR)"
+	VALGRIND_LOG_DIR="$(VALGRIND_LOG_DIR)/fuzz/nightly/memcheck" \
+	VALGRIND_SUPPRESSIONS="$(VALGRIND_SUPPRESSIONS)" \
+	VALGRIND_FUZZ_SCAN_TARGET="$(VALGRIND_FUZZ_SCAN_TARGET)" \
+	VALGRIND_FUZZ_ITERATIONS="$(VALGRIND_FUZZ_NIGHTLY_ITERATIONS)" \
+	VALGRIND_FUZZ_TIME_BUDGET_MS="$(VALGRIND_FUZZ_NIGHTLY_TIME_BUDGET_MS)" \
+	"$(VALGRIND_FUZZ_GATE_SCRIPT)" memcheck nightly
+	VALGRIND_LOG_DIR="$(VALGRIND_LOG_DIR)/fuzz/nightly/helgrind" \
+	VALGRIND_SUPPRESSIONS="$(VALGRIND_SUPPRESSIONS)" \
+	VALGRIND_FUZZ_SCAN_TARGET="$(VALGRIND_FUZZ_SCAN_TARGET)" \
+	VALGRIND_FUZZ_ITERATIONS="$(VALGRIND_FUZZ_NIGHTLY_ITERATIONS)" \
+	VALGRIND_FUZZ_TIME_BUDGET_MS="$(VALGRIND_FUZZ_NIGHTLY_TIME_BUDGET_MS)" \
+	"$(VALGRIND_FUZZ_GATE_SCRIPT)" helgrind nightly
+	@echo "Websocket fuzz valgrind nightly gate passed."
 
 package-daemon-deb-gated: check-valgrind package-daemon-deb
 	@echo "Gated daemon package build completed."
@@ -617,4 +677,4 @@ whois db2-discover http-crossdomainxml http-email-harvest \
 http-wordpress-plugins http-wp-plugins smb-check-vulns \
 )
 
-.PHONY: all clean install uninstall check static debug prerelease release-tarballs release-rpms web distclean lua-format preflight-daemon-portable build-daemon-portable check-daemon-portable package-daemon-deb check-artifact-hygiene preflight-valgrind check-valgrind-memcheck check-valgrind-helgrind check-valgrind package-daemon-deb-gated
+.PHONY: all clean install uninstall check static debug prerelease release-tarballs release-rpms web distclean lua-format preflight-daemon-portable build-daemon-portable check-daemon-portable package-daemon-deb check-artifact-hygiene preflight-valgrind preflight-fuzz-valgrind check-valgrind-memcheck check-valgrind-helgrind check-valgrind check-fuzz-valgrind-memcheck check-fuzz-valgrind-helgrind check-fuzz-valgrind check-fuzz-valgrind-nightly package-daemon-deb-gated

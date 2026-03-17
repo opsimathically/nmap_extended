@@ -7,6 +7,11 @@ type cli_options_t = {
     auth_token: string;
     scan_args: string[];
     allow_insecure_ws: boolean;
+    reject_unauthorized_tls: boolean;
+    ca_file?: string;
+    client_cert_file?: string;
+    client_key_file?: string;
+    server_name?: string;
 };
 
 function ParseCliArguments(params: { argv: string[] }): cli_options_t {
@@ -14,6 +19,11 @@ function ParseCliArguments(params: { argv: string[] }): cli_options_t {
     let base_url = '';
     let auth_token = '';
     let allow_insecure_ws = false;
+    let reject_unauthorized_tls = true;
+    let ca_file: string | undefined;
+    let client_cert_file: string | undefined;
+    let client_key_file: string | undefined;
+    let server_name: string | undefined;
     const scan_args: string[] = [];
 
     let i = 0;
@@ -34,6 +44,31 @@ function ParseCliArguments(params: { argv: string[] }): cli_options_t {
             i += 1;
             continue;
         }
+        if (arg === '--insecure-tls') {
+            reject_unauthorized_tls = false;
+            i += 1;
+            continue;
+        }
+        if (arg === '--ca-file') {
+            ca_file = argv[i + 1] ?? '';
+            i += 2;
+            continue;
+        }
+        if (arg === '--client-cert-file') {
+            client_cert_file = argv[i + 1] ?? '';
+            i += 2;
+            continue;
+        }
+        if (arg === '--client-key-file') {
+            client_key_file = argv[i + 1] ?? '';
+            i += 2;
+            continue;
+        }
+        if (arg === '--server-name') {
+            server_name = argv[i + 1] ?? '';
+            i += 2;
+            continue;
+        }
         if (arg === '--') {
             scan_args.push(...argv.slice(i + 1));
             break;
@@ -43,7 +78,7 @@ function ParseCliArguments(params: { argv: string[] }): cli_options_t {
 
     if (!base_url || !auth_token || scan_args.length === 0) {
         throw new Error(
-            'Usage: npm run debug -- --url <ws://host:port/> --token <token> [--allow-insecure-ws] -- <nmap scan args>'
+            'Usage: npm run debug -- --url <wss://host:port/> --token <token> [--allow-insecure-ws] [--insecure-tls] [--ca-file <path>] [--client-cert-file <path> --client-key-file <path>] [--server-name <name>] -- <nmap scan args>'
         );
     }
 
@@ -51,7 +86,12 @@ function ParseCliArguments(params: { argv: string[] }): cli_options_t {
         base_url,
         auth_token,
         scan_args,
-        allow_insecure_ws
+        allow_insecure_ws,
+        reject_unauthorized_tls,
+        ca_file,
+        client_cert_file,
+        client_key_file,
+        server_name
     };
 }
 
@@ -66,7 +106,14 @@ async function RunCli(): Promise<void> {
     const client = new NmapControlPlaneClient({
         base_url: options.base_url,
         auth_token: options.auth_token,
-        allow_insecure_ws: options.allow_insecure_ws
+        allow_insecure_ws: options.allow_insecure_ws,
+        websocket_tls_settings: {
+            reject_unauthorized_tls: options.reject_unauthorized_tls,
+            ca_file: options.ca_file,
+            client_cert_file: options.client_cert_file,
+            client_key_file: options.client_key_file,
+            server_name: options.server_name
+        }
     });
 
     client.onEvent({

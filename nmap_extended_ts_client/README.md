@@ -18,8 +18,9 @@ TypeScript SDK and debug CLI for the `nmap_extended` websocket control plane.
 - Event streaming with per-job replay cursor tracking (`last_event_id`).
 - Reconnect support with bounded backoff and jitter.
 - Security defaults:
-  - `wss://` expected by default.
+  - `wss://` expected by default with strict certificate verification.
   - `ws://` only allowed via explicit `allow_insecure_ws: true` override.
+  - Optional TLS options: `ca_file`, `client_cert_file`, `client_key_file`, `server_name`.
 
 ## Install
 
@@ -43,9 +44,15 @@ import { NmapControlPlaneClient } from '@opsimathically/nmap-extended-sdk';
 
 async function Main(): Promise<void> {
     const client = new NmapControlPlaneClient({
-        base_url: 'ws://127.0.0.1:8765/',
+        base_url: 'wss://127.0.0.1:8765/',
         auth_token: 'your_token_here',
-        allow_insecure_ws: true
+        websocket_tls_settings: {
+            reject_unauthorized_tls: true,
+            ca_file: '/etc/nmap_extended/tls/ca.crt',
+            client_cert_file: '/etc/nmap_extended/tls/client.crt',
+            client_key_file: '/etc/nmap_extended/tls/client.key',
+            server_name: 'nmap-extended.local'
+        }
     });
 
     client.onEvent({
@@ -78,6 +85,19 @@ Executable (when installed globally or via `npx`):
 
 ```bash
 nmap-extended-sdk-debug \
+  --url wss://127.0.0.1:8765/ \
+  --token your_token_here \
+  --ca-file /etc/nmap_extended/tls/ca.crt \
+  --client-cert-file /etc/nmap_extended/tls/client.crt \
+  --client-key-file /etc/nmap_extended/tls/client.key \
+  --server-name nmap-extended.local \
+  -- -n -Pn -sT -p 22 192.168.11.1/24
+```
+
+Local-only insecure example:
+
+```bash
+nmap-extended-sdk-debug \
   --url ws://127.0.0.1:8765/ \
   --token your_token_here \
   --allow-insecure-ws \
@@ -96,6 +116,30 @@ npm run check:api:update
 npm run pack:smoke
 ```
 
+Stateful websocket protocol fuzzing runner (for daemon API hardening):
+
+```bash
+npm run fuzz:websocket-api -- \
+  --base-url ws://127.0.0.1:8765/ \
+  --auth-token change_me \
+  --transport-profile ws \
+  --iterations 250 \
+  --time-budget-ms 45000 \
+  --seed 73331 \
+  --artifact-dir ./dist/fuzz/local
+```
+
+Replay a captured failure trace:
+
+```bash
+npm run fuzz:websocket-api -- \
+  --base-url ws://127.0.0.1:8765/ \
+  --auth-token change_me \
+  --transport-profile ws \
+  --replay-case ./dist/fuzz/local/failure_case.json \
+  --artifact-dir ./dist/fuzz/replay
+```
+
 Changesets release flow:
 
 ```bash
@@ -109,13 +153,13 @@ npm run release
 Generate a baseline daemon config:
 
 ```bash
-./nmap_extended --service-config-generate ./service_config.json
+./nmap --service-config-generate ./service_config.json
 ```
 
 Overwrite an existing config intentionally:
 
 ```bash
-./nmap_extended --service-config-generate ./service_config.json --force
+./nmap --service-config-generate ./service_config.json --force
 ```
 
 ## Disclaimer

@@ -4,13 +4,17 @@
 
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/ssl.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -31,10 +35,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <openssl/ssl.h>
+
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace websocket = beast::websocket;
 namespace net = boost::asio;
+namespace ssl = net::ssl;
 using tcp = net::ip::tcp;
 
 enum cp_auth_provider_t {
@@ -51,6 +58,16 @@ struct cp_auth_config_t {
   std::string env_var;
 };
 
+struct cp_tls_config_t {
+  bool enabled;
+  std::string cert_file;
+  std::string key_file;
+  std::string ca_file;
+  bool require_client_cert;
+  bool allow_insecure_remote_ws;
+  std::string min_tls_version;
+};
+
 struct cp_service_config_t {
   std::string bind_addr;
   unsigned short port;
@@ -58,6 +75,7 @@ struct cp_service_config_t {
   size_t max_active_scans;
   uint64_t cancel_grace_ms;
   cp_auth_config_t auth;
+  cp_tls_config_t tls;
 };
 
 struct cp_event_t {
@@ -151,6 +169,7 @@ static void print_daemon_usage(const char *progname) {
                "Notes:\n"
                "  * --service requires a JSON config file path.\n"
                "  * Runtime daemon flags passed on CLI are rejected when config is used.\n"
+               "  * TLS/WSS settings are configured through the config file tls block.\n"
                "  * --service-worker is internal and used by daemon job workers.\n",
                name,
                name);
@@ -256,8 +275,18 @@ static bool write_generic_config(const std::string &path, bool force, std::strin
   auth["provider"] = "inline_token";
   auth["token"] = "change_me";
 
+  boost::json::object tls;
+  tls["enabled"] = false;
+  tls["cert_file"] = "/etc/nmap_extended/tls/server.crt";
+  tls["key_file"] = "/etc/nmap_extended/tls/server.key";
+  tls["ca_file"] = "/etc/nmap_extended/tls/ca.crt";
+  tls["require_client_cert"] = false;
+  tls["allow_insecure_remote_ws"] = false;
+  tls["min_tls_version"] = "tls1_2";
+
   root["runtime"] = runtime;
   root["auth"] = auth;
+  root["tls"] = tls;
 
   std::ofstream out(path.c_str(), std::ios::out | std::ios::trunc);
   if (!out) {
@@ -317,6 +346,62 @@ static bool json_get_int64(const boost::json::object &obj,
   }
   out = it->value().as_int64();
   return true;
+}
+
+static bool json_get_bool(const boost::json::object &obj,
+                          const char *key,
+                          bool &out,
+                          std::string &error_text) {
+  boost::json::object::const_iterator it = obj.find(key);
+  if (it == obj.end() || !it->value().is_bool()) {
+    error_text = std::string("missing or invalid boolean: ") + key;
+    return false;
+  }
+  out = it->value().as_bool();
+  return true;
+}
+
+static bool json_get_optional_bool(const boost::json::object &obj,
+                                   const char *key,
+                                   bool &out,
+                                   std::string &error_text) {
+  boost::json::object::const_iterator it = obj.find(key);
+  if (it == obj.end())
+    return true;
+  if (!it->value().is_bool()) {
+    error_text = std::string("invalid boolean: ") + key;
+    return false;
+  }
+  out = it->value().as_bool();
+  return true;
+}
+
+static bool json_get_optional_string(const boost::json::object &obj,
+                                     const char *key,
+                                     std::string &out,
+                                     std::string &error_text) {
+  boost::json::object::const_iterator it = obj.find(key);
+  if (it == obj.end())
+    return true;
+  if (!it->value().is_string()) {
+    error_text = std::string("invalid string: ") + key;
+    return false;
+  }
+
+  std::string value = std::string(it->value().as_string().c_str());
+  if (value.empty()) {
+    error_text = std::string("empty value is not allowed for: ") + key;
+    return false;
+  }
+  out = value;
+  return true;
+}
+
+static bool file_readable(const std::string &path) {
+  if (path.empty())
+    return false;
+  std::ifstream file(path.c_str());
+  return file.good();
 }
 
 static bool resolve_auth_token(cp_auth_config_t &auth, std::string &error_text) {
@@ -387,6 +472,14 @@ static bool parse_service_config_file(const std::string &path,
   boost::json::object root = root_value.as_object();
   boost::json::object runtime;
   boost::json::object auth_obj;
+
+  cfg.tls.enabled = false;
+  cfg.tls.cert_file.clear();
+  cfg.tls.key_file.clear();
+  cfg.tls.ca_file.clear();
+  cfg.tls.require_client_cert = false;
+  cfg.tls.allow_insecure_remote_ws = false;
+  cfg.tls.min_tls_version = "tls1_2";
 
   if (!json_get_object(root, "runtime", runtime, error_text))
     return false;
@@ -460,6 +553,79 @@ static bool parse_service_config_file(const std::string &path,
 
   if (!resolve_auth_token(cfg.auth, error_text))
     return false;
+
+  boost::json::object::const_iterator tls_it = root.find("tls");
+  if (tls_it != root.end()) {
+    if (!tls_it->value().is_object()) {
+      error_text = "missing or invalid object: tls";
+      return false;
+    }
+
+    boost::json::object tls_obj = tls_it->value().as_object();
+
+    if (!json_get_bool(tls_obj, "enabled", cfg.tls.enabled, error_text))
+      return false;
+
+    if (!json_get_optional_string(tls_obj, "cert_file", cfg.tls.cert_file, error_text))
+      return false;
+    if (!json_get_optional_string(tls_obj, "key_file", cfg.tls.key_file, error_text))
+      return false;
+    if (!json_get_optional_string(tls_obj, "ca_file", cfg.tls.ca_file, error_text))
+      return false;
+    if (!json_get_optional_bool(tls_obj, "require_client_cert", cfg.tls.require_client_cert, error_text))
+      return false;
+    if (!json_get_optional_bool(tls_obj, "allow_insecure_remote_ws", cfg.tls.allow_insecure_remote_ws, error_text))
+      return false;
+    if (!json_get_optional_string(tls_obj, "min_tls_version", cfg.tls.min_tls_version, error_text))
+      return false;
+  }
+
+  std::transform(cfg.tls.min_tls_version.begin(),
+                 cfg.tls.min_tls_version.end(),
+                 cfg.tls.min_tls_version.begin(),
+                 [](unsigned char c) { return (char) std::tolower(c); });
+
+  if (cfg.tls.min_tls_version != "tls1_2" &&
+      cfg.tls.min_tls_version != "tls1_3") {
+    error_text = "tls.min_tls_version must be one of: tls1_2, tls1_3";
+    return false;
+  }
+
+  if (cfg.tls.require_client_cert && !cfg.tls.enabled) {
+    error_text = "tls.require_client_cert requires tls.enabled=true";
+    return false;
+  }
+
+  if (cfg.tls.enabled) {
+    if (cfg.tls.cert_file.empty() || cfg.tls.key_file.empty()) {
+      error_text = "tls.cert_file and tls.key_file are required when tls.enabled=true";
+      return false;
+    }
+
+    if (!file_readable(cfg.tls.cert_file)) {
+      error_text = "failed to read tls.cert_file";
+      return false;
+    }
+
+    if (!file_readable(cfg.tls.key_file)) {
+      error_text = "failed to read tls.key_file";
+      return false;
+    }
+
+    if (cfg.tls.require_client_cert) {
+      if (cfg.tls.ca_file.empty()) {
+        error_text = "tls.ca_file is required when tls.require_client_cert=true";
+        return false;
+      }
+      if (!file_readable(cfg.tls.ca_file)) {
+        error_text = "failed to read tls.ca_file";
+        return false;
+      }
+    } else if (!cfg.tls.ca_file.empty() && !file_readable(cfg.tls.ca_file)) {
+      error_text = "failed to read optional tls.ca_file";
+      return false;
+    }
+  }
 
   return true;
 }
@@ -561,9 +727,11 @@ static bool validate_scan_args(const std::vector<std::string> &args,
 class cp_state_t {
  public:
   cp_state_t(const cp_service_config_t &config,
-             const std::string &binary_path)
+             const std::string &binary_path,
+             bool tls_context_ready)
       : cfg(config),
         binary_path(binary_path),
+        tls_context_ready(tls_context_ready),
         daemon_started_at(cp_now_iso8601_utc()),
         next_job_id(1),
         stopping(false),
@@ -841,7 +1009,20 @@ class cp_state_t {
     limits["max_active_scans"] = (int64_t) cfg.max_active_scans;
     limits["cancel_grace_ms"] = (int64_t) cfg.cancel_grace_ms;
     limits["auth_provider"] = cfg.auth.provider_name;
+    limits["tls_enabled"] = cfg.tls.enabled;
+    limits["tls_require_client_cert"] = cfg.tls.require_client_cert;
+    limits["tls_min_tls_version"] = cfg.tls.min_tls_version;
     out["limits"] = limits;
+
+    boost::json::object transport;
+    transport["mode"] = cfg.tls.enabled ? "wss" : "ws";
+    transport["tls_enabled"] = cfg.tls.enabled;
+    transport["require_client_cert"] = cfg.tls.require_client_cert;
+    transport["min_tls_version"] = cfg.tls.min_tls_version;
+    transport["cert_material_loaded"] = tls_context_ready;
+    transport["ca_configured"] = !cfg.tls.ca_file.empty();
+    transport["allow_insecure_remote_ws"] = cfg.tls.allow_insecure_remote_ws;
+    out["transport"] = transport;
 
     boost::json::object counters;
     counters["total_events"] = (int64_t) total_events.load();
@@ -1334,6 +1515,7 @@ class cp_state_t {
 
   cp_service_config_t cfg;
   std::string binary_path;
+  bool tls_context_ready;
   std::string daemon_started_at;
 
   std::atomic<unsigned long> next_job_id;
@@ -1399,7 +1581,8 @@ static boost::json::object make_response(const std::string &request_id,
   return out;
 }
 
-static bool ws_send_json(websocket::stream<tcp::socket> &ws,
+template <typename NextLayer>
+static bool ws_send_json(websocket::stream<NextLayer> &ws,
                          const boost::json::value &value) {
   boost::json::error_code ec;
   std::string body = boost::json::serialize(value);
@@ -1418,7 +1601,8 @@ static boost::json::value make_event_envelope(const std::shared_ptr<cp_job_t> &j
   return obj;
 }
 
-static void stream_events(websocket::stream<tcp::socket> &ws,
+template <typename NextLayer>
+static void stream_events(websocket::stream<NextLayer> &ws,
                           cp_state_t &state,
                           const std::shared_ptr<cp_job_t> &job,
                           uint64_t last_event_id) {
@@ -1489,7 +1673,8 @@ static bool parse_start_scan_payload(const boost::json::object &payload,
   return true;
 }
 
-static bool handle_request(websocket::stream<tcp::socket> &ws,
+template <typename NextLayer>
+static bool handle_request(websocket::stream<NextLayer> &ws,
                            cp_state_t &state,
                            const boost::json::object &request_obj) {
   std::string request_id;
@@ -1534,6 +1719,8 @@ static bool handle_request(websocket::stream<tcp::socket> &ws,
     caps["commands"] = commands;
     caps["max_concurrent_scans"] = (int64_t) state.get_max_active_scans();
     caps["event_delivery"] = "at_least_once_with_replay";
+    caps["wss_supported"] = true;
+    caps["mtls_supported"] = true;
     return ws_send_json(ws, make_response(request_id, "ok", caps, ""));
   }
 
@@ -1650,35 +1837,90 @@ static bool handle_request(websocket::stream<tcp::socket> &ws,
                                     "unknown command"));
 }
 
-static void handle_session(tcp::socket socket,
-                           const cp_service_config_t &cfg,
-                           cp_state_t &state) {
-  beast::error_code ec;
-  beast::flat_buffer buffer;
-  http::request<http::string_body> req;
+static bool configure_tls_context(const cp_service_config_t &cfg,
+                                  ssl::context &tls_context,
+                                  std::string &error_text) {
+  if (!cfg.tls.enabled)
+    return true;
 
-  http::read(socket, buffer, req, ec);
-  if (ec)
-    return;
-
-  std::string token = extract_token_from_target(std::string(req.target()));
-  if (token != cfg.auth.token) {
-    http::response<http::string_body> res{http::status::unauthorized, req.version()};
-    res.set(http::field::content_type, "text/plain");
-    res.body() = "unauthorized";
-    res.prepare_payload();
-    http::write(socket, res, ec);
-    return;
+  boost::system::error_code ec;
+  tls_context.set_options(ssl::context::default_workarounds |
+                              ssl::context::no_sslv2 |
+                              ssl::context::no_sslv3,
+                          ec);
+  if (ec) {
+    error_text = "failed to set TLS context options: " + ec.message();
+    return false;
   }
 
-  websocket::stream<tcp::socket> ws(std::move(socket));
-  ws.read_message_max(1024 * 1024);
-  ws.accept(req, ec);
-  if (ec)
-    return;
+  if (cfg.tls.min_tls_version == "tls1_3") {
+#ifdef TLS1_3_VERSION
+    if (SSL_CTX_set_min_proto_version(tls_context.native_handle(), TLS1_3_VERSION) != 1) {
+      error_text = "failed to enforce tls1_3 minimum protocol version";
+      return false;
+    }
+#else
+    error_text = "tls1_3 minimum protocol is not supported by linked OpenSSL";
+    return false;
+#endif
+  } else {
+#ifdef TLS1_2_VERSION
+    if (SSL_CTX_set_min_proto_version(tls_context.native_handle(), TLS1_2_VERSION) != 1) {
+      error_text = "failed to enforce tls1_2 minimum protocol version";
+      return false;
+    }
+#else
+    tls_context.set_options(ssl::context::no_tlsv1 | ssl::context::no_tlsv1_1, ec);
+    if (ec) {
+      error_text = "failed to configure tls1_2 minimum protocol version: " + ec.message();
+      return false;
+    }
+#endif
+  }
+
+  tls_context.use_certificate_chain_file(cfg.tls.cert_file, ec);
+  if (ec) {
+    error_text = "failed to load tls.cert_file: " + ec.message();
+    return false;
+  }
+
+  tls_context.use_private_key_file(cfg.tls.key_file, ssl::context::pem, ec);
+  if (ec) {
+    error_text = "failed to load tls.key_file: " + ec.message();
+    return false;
+  }
+
+  if (!cfg.tls.ca_file.empty()) {
+    tls_context.load_verify_file(cfg.tls.ca_file, ec);
+    if (ec) {
+      error_text = "failed to load tls.ca_file: " + ec.message();
+      return false;
+    }
+  }
+
+  if (cfg.tls.require_client_cert) {
+    tls_context.set_verify_mode(ssl::verify_peer | ssl::verify_fail_if_no_peer_cert, ec);
+    if (ec) {
+      error_text = "failed to set mTLS verify mode: " + ec.message();
+      return false;
+    }
+  } else {
+    tls_context.set_verify_mode(ssl::verify_none, ec);
+    if (ec) {
+      error_text = "failed to set TLS verify mode: " + ec.message();
+      return false;
+    }
+  }
+
+  return true;
+}
+
+template <typename NextLayer>
+static void run_websocket_session(websocket::stream<NextLayer> &ws,
+                                  cp_state_t &state) {
+  beast::error_code ec;
 
   state.note_session_open();
-
   for (;;) {
     beast::flat_buffer ws_buffer;
     ws.read(ws_buffer, ec);
@@ -1700,8 +1942,97 @@ static void handle_session(tcp::socket socket,
     if (!handle_request(ws, state, parsed.as_object()))
       break;
   }
-
   state.note_session_close();
+}
+
+template <typename Stream>
+static void write_unauthorized_response(Stream &stream,
+                                        unsigned version,
+                                        beast::error_code &ec) {
+  http::response<http::string_body> res{http::status::unauthorized, version};
+  res.set(http::field::content_type, "text/plain");
+  res.body() = "unauthorized";
+  res.prepare_payload();
+  http::write(stream, res, ec);
+}
+
+static void handle_plain_session(tcp::socket socket,
+                                 const cp_service_config_t &cfg,
+                                 cp_state_t &state) {
+  beast::error_code ec;
+  beast::flat_buffer buffer;
+  http::request<http::string_body> req;
+
+  http::read(socket, buffer, req, ec);
+  if (ec)
+    return;
+
+  std::string token = extract_token_from_target(std::string(req.target()));
+  if (token != cfg.auth.token) {
+    write_unauthorized_response(socket, req.version(), ec);
+    return;
+  }
+
+  websocket::stream<tcp::socket> ws(std::move(socket));
+  ws.read_message_max(1024 * 1024);
+  ws.accept(req, ec);
+  if (ec)
+    return;
+
+  run_websocket_session(ws, state);
+}
+
+static void handle_tls_session(tcp::socket socket,
+                               const cp_service_config_t &cfg,
+                               cp_state_t &state,
+                               ssl::context *tls_context) {
+  if (!tls_context)
+    return;
+
+  beast::error_code ec;
+  beast::ssl_stream<beast::tcp_stream> tls_stream(std::move(socket), *tls_context);
+  beast::get_lowest_layer(tls_stream).expires_after(std::chrono::seconds(10));
+  tls_stream.handshake(ssl::stream_base::server, ec);
+  if (ec) {
+    std::fprintf(stderr, "TLS handshake failed: %s\n", ec.message().c_str());
+    return;
+  }
+
+  beast::get_lowest_layer(tls_stream).expires_never();
+
+  beast::flat_buffer buffer;
+  http::request<http::string_body> req;
+  http::read(tls_stream, buffer, req, ec);
+  if (ec) {
+    std::fprintf(stderr, "TLS request read failed: %s\n", ec.message().c_str());
+    return;
+  }
+
+  std::string token = extract_token_from_target(std::string(req.target()));
+  if (token != cfg.auth.token) {
+    write_unauthorized_response(tls_stream, req.version(), ec);
+    return;
+  }
+
+  websocket::stream<beast::ssl_stream<beast::tcp_stream> > ws(std::move(tls_stream));
+  ws.read_message_max(1024 * 1024);
+  ws.accept(req, ec);
+  if (ec) {
+    std::fprintf(stderr, "TLS websocket upgrade failed: %s\n", ec.message().c_str());
+    return;
+  }
+
+  run_websocket_session(ws, state);
+}
+
+static void handle_session(tcp::socket socket,
+                           const cp_service_config_t &cfg,
+                           cp_state_t &state,
+                           ssl::context *tls_context) {
+  if (cfg.tls.enabled)
+    handle_tls_session(std::move(socket), cfg, state, tls_context);
+  else
+    handle_plain_session(std::move(socket), cfg, state);
 }
 
 int nmap_service_main(int argc, char *argv[]) {
@@ -1766,6 +2097,25 @@ int nmap_service_main(int argc, char *argv[]) {
     return 2;
   }
 
+  if (!cfg.tls.enabled &&
+      !bind_address.is_loopback() &&
+      !cfg.tls.allow_insecure_remote_ws) {
+    std::fprintf(stderr,
+                 "Error: ws transport on non-loopback bind requires tls.enabled=true or tls.allow_insecure_remote_ws=true\n");
+    return 2;
+  }
+
+  ssl::context tls_context(ssl::context::tls_server);
+  ssl::context *tls_context_ptr = NULL;
+  if (cfg.tls.enabled) {
+    std::string tls_error;
+    if (!configure_tls_context(cfg, tls_context, tls_error)) {
+      std::fprintf(stderr, "Error: %s\n", tls_error.c_str());
+      return 2;
+    }
+    tls_context_ptr = &tls_context;
+  }
+
   net::io_context ioc;
   tcp::acceptor acceptor(ioc);
 
@@ -1792,11 +2142,13 @@ int nmap_service_main(int argc, char *argv[]) {
     return 2;
   }
 
-  cp_state_t state(cfg, binary_path);
+  cp_state_t state(cfg, binary_path, cfg.tls.enabled);
   state.start_workers();
 
+  const char *scheme = cfg.tls.enabled ? "wss" : "ws";
   std::fprintf(stdout,
-               "Service mode listening on ws://%s:%u/?token=<token>\n",
+               "Service mode listening on %s://%s:%u/?token=<token>\n",
+               scheme,
                cfg.bind_addr.c_str(),
                cfg.port);
   std::fflush(stdout);
@@ -1810,7 +2162,8 @@ int nmap_service_main(int argc, char *argv[]) {
     std::thread session_thread(handle_session,
                                std::move(socket),
                                std::cref(cfg),
-                               std::ref(state));
+                               std::ref(state),
+                               tls_context_ptr);
     session_thread.detach();
   }
 

@@ -1,0 +1,113 @@
+name: websocket-fuzz-valgrind
+
+on:
+  pull_request:
+    paths:
+      - "nmap_service.cc"
+      - "Makefile.in"
+      - "packaging/valgrind/**"
+      - "nmap_extended_ts_client/**"
+      - ".github/workflows/websocket-fuzz-valgrind.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "nmap_service.cc"
+      - "Makefile.in"
+      - "packaging/valgrind/**"
+      - "nmap_extended_ts_client/**"
+      - ".github/workflows/websocket-fuzz-valgrind.yml"
+  schedule:
+    - cron: "15 9 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: websocket-fuzz-valgrind-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  pr-bounded:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and fuzz dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            autoconf \
+            automake \
+            libpcap-dev \
+            libnet1-dev \
+            libpcre2-dev \
+            libssl-dev \
+            libboost-all-dev \
+            valgrind \
+            fakeroot \
+            dpkg-dev \
+            nodejs \
+            npm
+
+      - name: Configure project
+        run: ./configure
+
+      - name: Install TypeScript dependencies
+        working-directory: nmap_extended_ts_client
+        run: npm ci
+
+      - name: Run bounded websocket fuzz valgrind gate
+        run: make check-fuzz-valgrind
+
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: websocket-fuzz-valgrind-pr-${{ github.run_id }}
+          path: dist/valgrind/fuzz
+          if-no-files-found: warn
+
+  nightly-exhaustive:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and fuzz dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            autoconf \
+            automake \
+            libpcap-dev \
+            libnet1-dev \
+            libpcre2-dev \
+            libssl-dev \
+            libboost-all-dev \
+            valgrind \
+            fakeroot \
+            dpkg-dev \
+            nodejs \
+            npm
+
+      - name: Configure project
+        run: ./configure
+
+      - name: Install TypeScript dependencies
+        working-directory: nmap_extended_ts_client
+        run: npm ci
+
+      - name: Run exhaustive websocket fuzz valgrind gate
+        run: make check-fuzz-valgrind-nightly
+
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: websocket-fuzz-valgrind-nightly-${{ github.run_id }}
+          path: dist/valgrind/fuzz
+          if-no-files-found: warn

@@ -307,7 +307,7 @@ static void printusage() {
          "  -h: Print this help summary page.\n"
          "DAEMON MODE:\n"
          "  --service: Run daemon mode (requires --service-config)\n"
-         "  --service-config <path>: JSON config for daemon runtime/auth settings\n"
+         "  --service-config <path>: JSON config for daemon runtime/auth/tls settings\n"
          "  --service-config-generate <path>: Write a generic daemon config template\n"
          "  --force: Overwrite an existing file with --service-config-generate\n"
          "  --service-worker: Internal worker flag used by daemon mode\n"

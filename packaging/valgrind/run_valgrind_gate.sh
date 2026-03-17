@@ -123,7 +123,7 @@ CLIENT_EXIT=0
     NMAP_CP_URL="ws://127.0.0.1:8765/" \
     NMAP_CP_TOKEN="change_me" \
     NMAP_SCAN_TARGET="${SMOKE_TARGETS}" \
-    node --test dist/tests/live_event_stream.test.js dist/tests/concurrency_cancel_diagnostics.test.js
+    node --test dist-tests/tests/live_event_stream.test.js dist-tests/tests/concurrency_cancel_diagnostics.test.js
 ) >"${CLIENT_LOG}" 2>&1 || CLIENT_EXIT=$?
 
 kill -TERM "${DAEMON_PID}" >/dev/null 2>&1 || true
