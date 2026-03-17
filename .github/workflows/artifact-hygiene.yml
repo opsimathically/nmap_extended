@@ -1,0 +1,14 @@
+name: artifact-hygiene
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  artifact_hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check artifact hygiene
+        run: make check-artifact-hygiene

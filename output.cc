@@ -82,6 +82,7 @@
 #include "xml.h"
 #include "nbase.h"
 #include "libnetutil/netutil.h"
+#include "control_plane_events.h"
 #include <nsock.h>
 
 #include <math.h>
@@ -1823,6 +1824,49 @@ static void write_merged_fpr(const FingerPrintResults *FPR,
   xml_newline();
 }
 
+static void cp_emit_os_events(const Target *currenths, const FingerPrintResults *fpr) {
+  if (!cp_is_worker_mode() || fpr == NULL || fpr->num_matches <= 0)
+    return;
+
+  std::string escaped_host = cp_json_escape(currenths->targetipstr());
+  for (int i = 0; i < fpr->num_matches; i++) {
+    const char *os_name = (fpr->matches[i] && fpr->matches[i]->OS_name) ? fpr->matches[i]->OS_name : "";
+    std::string escaped_os = cp_json_escape(os_name);
+    char payload[640];
+    Snprintf(payload, sizeof(payload),
+             "{\"host\":\"%s\",\"os_name\":\"%s\",\"accuracy\":%.6f}",
+             escaped_host.c_str(),
+             escaped_os.c_str(),
+             fpr->accuracy[i]);
+    cp_emit_event_json(i == 0 ? "os_discovered" : "os_match_candidate", payload);
+  }
+}
+
+#ifndef NOLUA
+static void cp_emit_script_result_event(const char *phase,
+                                        const char *host,
+                                        const ScriptResult *result,
+                                        const char *script_output) {
+  if (!cp_is_worker_mode() || result == NULL)
+    return;
+
+  const char *script_id = result->get_id() ? result->get_id() : "";
+  std::string escaped_phase = cp_json_escape(phase ? phase : "");
+  std::string escaped_host = cp_json_escape(host ? host : "");
+  std::string escaped_id = cp_json_escape(script_id);
+  std::string escaped_output = cp_json_escape(script_output ? script_output : "");
+
+  char payload[2048];
+  Snprintf(payload, sizeof(payload),
+           "{\"phase\":\"%s\",\"host\":\"%s\",\"script_id\":\"%s\",\"output\":\"%s\"}",
+           escaped_phase.c_str(),
+           escaped_host.c_str(),
+           escaped_id.c_str(),
+           escaped_output.c_str());
+  cp_emit_event_json("script_result", payload);
+}
+#endif
+
 /* Prints the formatted OS Scan output to stdout, logfiles, etc (but only
    if an OS Scan was performed).*/
 void printosscanoutput(const Target *currenths) {
@@ -1838,6 +1882,8 @@ void printosscanoutput(const Target *currenths) {
   if (currenths->FPR == NULL)
     return;
   FPR = currenths->FPR;
+
+  cp_emit_os_events(currenths, FPR);
 
   xml_start_tag("os");
   if (FPR->osscan_opentcpport > 0) {
@@ -2219,6 +2265,10 @@ void printscriptresults(const ScriptResults *scriptResults, stype scantype) {
       script_output = formatScriptOutput((*iter));
       if (script_output != NULL) {
         log_write(LOG_PLAIN, "%s\n", script_output);
+        cp_emit_script_result_event(scantype == SCRIPT_PRE_SCAN ? "pre_scan" : "post_scan",
+                                    "",
+                                    *iter,
+                                    script_output);
         free(script_output);
       }
     }
@@ -2241,6 +2291,10 @@ void printhostscriptresults(const Target *currenths) {
       script_output = formatScriptOutput((*iter));
       if (script_output != NULL) {
         log_write(LOG_PLAIN, "%s\n", script_output);
+        cp_emit_script_result_event("host_scan",
+                                    currenths->targetipstr(),
+                                    *iter,
+                                    script_output);
         free(script_output);
       }
     }
@@ -2441,6 +2495,20 @@ void printStatusMessage() {
             time / 60 / 60, time / 60 % 60, time % 60, o.numhosts_scanned,
             o.numhosts_up, o.numhosts_scanning,
             scantype2str(o.current_scantype));
+
+  if (cp_is_worker_mode()) {
+    std::string escaped_scan_type = cp_json_escape(scantype2str(o.current_scantype));
+    char payload[512];
+    Snprintf(payload, sizeof(payload),
+             "{\"elapsed_sec\":%d,\"hosts_completed\":%u,\"hosts_up\":%u,"
+             "\"hosts_undergoing\":%d,\"scan_type\":\"%s\"}",
+             time,
+             o.numhosts_scanned,
+             o.numhosts_up,
+             o.numhosts_scanning,
+             escaped_scan_type.c_str());
+    cp_emit_event_json("job_progress", payload);
+  }
 }
 
 /* Prints the beginning of a "finished" start tag, with time, timestr, and

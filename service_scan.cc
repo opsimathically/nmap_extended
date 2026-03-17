@@ -74,6 +74,7 @@
 #include "protocols.h"
 #include "scan_lists.h"
 #include "charpool.h"
+#include "control_plane_events.h"
 
 #include "nmap_tty.h"
 
@@ -107,6 +108,7 @@
 
 #include <algorithm>
 #include <list>
+#include <string>
 
 extern NmapOps o;
 
@@ -2704,6 +2706,37 @@ static int shouldWePrintFingerprint(ServiceNFO *svc) {
   return 1;
 }
 
+static void cp_emit_service_discovered_event(ServiceNFO *svc) {
+  if (!cp_is_worker_mode())
+    return;
+
+  const char *service_name = (svc->probe_matched && *svc->probe_matched) ? svc->probe_matched : "";
+  const char *product = *svc->product_matched ? svc->product_matched : "";
+  const char *version = *svc->version_matched ? svc->version_matched : "";
+  const char *extrainfo = *svc->extrainfo_matched ? svc->extrainfo_matched : "";
+  const char *proto = proto2ascii_lowercase(svc->proto);
+
+  std::string escaped_host = cp_json_escape(svc->target->targetipstr());
+  std::string escaped_service = cp_json_escape(service_name);
+  std::string escaped_product = cp_json_escape(product);
+  std::string escaped_version = cp_json_escape(version);
+  std::string escaped_extrainfo = cp_json_escape(extrainfo);
+  std::string escaped_proto = cp_json_escape(proto ? proto : "unknown");
+
+  char payload[1024];
+  Snprintf(payload, sizeof(payload),
+           "{\"host\":\"%s\",\"port\":%u,\"protocol\":\"%s\","
+           "\"service\":\"%s\",\"product\":\"%s\",\"version\":\"%s\",\"extrainfo\":\"%s\"}",
+           escaped_host.c_str(),
+           (unsigned int) svc->portno,
+           escaped_proto.c_str(),
+           escaped_service.c_str(),
+           escaped_product.c_str(),
+           escaped_version.c_str(),
+           escaped_extrainfo.c_str());
+  cp_emit_event_json("service_discovered", payload);
+}
+
 // This is passed a completed ServiceGroup which contains the scanning results for every service.
 // The function iterates through each finished service and adds the results to Target structure for
 // Nmap to output later.
@@ -2734,6 +2767,7 @@ std::list<ServiceNFO *>::iterator svc;
                                           *(*svc)->devicetype_matched? (*svc)->devicetype_matched : NULL,
                                           (cpe.size() > 0) ? &cpe : NULL,
                                           shouldWePrintFingerprint(*svc) ? (*svc)->getServiceFingerprint(NULL) : NULL);
+     cp_emit_service_discovered_event(*svc);
    }  else {
        (*svc)->target->ports.setServiceProbeResults((*svc)->portno, (*svc)->proto,
                                             (*svc)->probe_state, NULL,

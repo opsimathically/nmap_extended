@@ -109,6 +109,7 @@ individually.
 #include "Target.h"
 #include "tcpip.h"
 #include "utils.h"
+#include "control_plane_events.h"
 
 #include "struct_ip.h"
 
@@ -122,6 +123,7 @@ individually.
 #include <list>
 #include <map>
 #include <set>
+#include <string>
 #include <vector>
 
 extern NmapOps o;
@@ -1051,6 +1053,19 @@ void TracerouteState::set_host_hop(HostState *host, u8 ttl,
         num_active_probes -= host->cancel_probes_below(ttl);
       }
     }
+  }
+
+  if (cp_is_worker_mode()) {
+    std::string escaped_target = cp_json_escape(host->target->targetipstr());
+    std::string escaped_hop = cp_json_escape(ss_to_string(from_addr));
+    char payload[640];
+    Snprintf(payload, sizeof(payload),
+             "{\"host\":\"%s\",\"ttl\":%u,\"hop\":\"%s\",\"rtt_ms\":%.2f}",
+             escaped_target.c_str(),
+             (unsigned int) ttl,
+             escaped_hop.c_str(),
+             rtt);
+    cp_emit_event_json("traceroute_hop", payload);
   }
 }
 

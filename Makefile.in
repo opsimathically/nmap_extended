@@ -48,7 +48,17 @@ CPPFLAGS = @CPPFLAGS@ $(DEFS)
 CFLAGS = @CFLAGS@ $(DBGFLAGS) $(CCOPT)
 STATIC =
 LDFLAGS = @LDFLAGS@ $(DBGFLAGS) $(STATIC)
-LIBS =  @LIBNSOCK_LIBS@ @LIBNBASE_LIBS@ @LIBPCRE_LIBS@ @LIBPCAP_LIBS@ $(LIBSSH2_LIBS) $(OPENSSL_LIBS) $(ZLIB_LIBS) libnetutil/libnetutil.a @LIBDNET_LIBS@ @LIBLUA_LIBS@ @LIBLINEAR_LIBS@ @LIBS@
+LIBS =  @LIBNSOCK_LIBS@ @LIBNBASE_LIBS@ @LIBPCRE_LIBS@ @LIBPCAP_LIBS@ $(LIBSSH2_LIBS) $(OPENSSL_LIBS) $(ZLIB_LIBS) libnetutil/libnetutil.a @LIBDNET_LIBS@ @LIBLUA_LIBS@ @LIBLINEAR_LIBS@ @LIBS@ -libverbs
+CONTROL_PLANE_LIBS = -lboost_system -lboost_json -lpthread
+PORTABLE_CPPFLAGS = $(CPPFLAGS) -DBOOST_ERROR_CODE_HEADER_ONLY
+PORTABLE_LDFLAGS = $(LDFLAGS) -static-libstdc++ -static-libgcc
+PORTABLE_LIBS = $(filter-out -libverbs,$(LIBS))
+PORTABLE_CONTROL_PLANE_LIBS = -Wl,-Bstatic -lboost_json -Wl,-Bdynamic -lpthread
+VALGRIND_GATE_SCRIPT = ./packaging/valgrind/run_valgrind_gate.sh
+VALGRIND_SUPPRESSIONS = ./packaging/valgrind/nmap_extended.supp
+VALGRIND_LOG_DIR = ./dist/valgrind
+VALGRIND_SMOKE_TARGETS = 192.168.11.7,192.168.11.1,192.168.11.255
+ARTIFACT_HYGIENE_SCRIPT = ./packaging/ci/check_artifact_hygiene.sh
 OPENSSL_LIBS = @OPENSSL_LIBS@
 LIBSSH2_LIBS = @LIBSSH2_LIBS@
 ZLIB_LIBS = @ZLIB_LIBS@
@@ -108,11 +118,11 @@ NSE_OBJS+=nse_zlib.o
 endif
 endif
 
-export SRCS = charpool.cc FingerPrintResults.cc FPEngine.cc FPModel.cc idle_scan.cc MACLookup.cc main.cc nmap.cc nmap_dns.cc nmap_error.cc nmap_ftp.cc NmapOps.cc NmapOutputTable.cc nmap_tty.cc osscan2.cc osscan.cc output.cc payload.cc portlist.cc portreasons.cc protocols.cc scan_engine.cc scan_engine_connect.cc scan_engine_raw.cc scan_lists.cc service_scan.cc services.cc string_pool.cc Target.cc NewTargets.cc TargetGroup.cc targets.cc tcpip.cc timing.cc traceroute.cc utils.cc xml.cc $(NSE_SRC)
+export SRCS = charpool.cc FingerPrintResults.cc FPEngine.cc FPModel.cc idle_scan.cc MACLookup.cc main.cc nmap.cc nmap_dns.cc nmap_error.cc nmap_ftp.cc NmapOps.cc NmapOutputTable.cc nmap_tty.cc osscan2.cc osscan.cc output.cc payload.cc portlist.cc portreasons.cc protocols.cc scan_engine.cc scan_engine_connect.cc scan_engine_raw.cc scan_lists.cc service_scan.cc services.cc string_pool.cc Target.cc NewTargets.cc TargetGroup.cc targets.cc tcpip.cc timing.cc traceroute.cc utils.cc xml.cc control_plane_events.cc nmap_service.cc $(NSE_SRC)
 
-export HDRS = charpool.h FingerPrintResults.h FPEngine.h idle_scan.h MACLookup.h nmap_amigaos.h nmap_dns.h nmap_error.h nmap.h nmap_ftp.h NmapOps.h NmapOutputTable.h nmap_tty.h nmap_winconfig.h osscan2.h osscan.h output.h payload.h portlist.h portreasons.h probespec.h protocols.h scan_engine.h scan_engine_connect.h scan_engine_raw.h service_scan.h scan_lists.h services.h string_pool.h NewTargets.h TargetGroup.h Target.h targets.h tcpip.h timing.h traceroute.h utils.h xml.h $(NSE_HDRS)
+export HDRS = charpool.h FingerPrintResults.h FPEngine.h idle_scan.h MACLookup.h nmap_amigaos.h nmap_dns.h nmap_error.h nmap.h nmap_ftp.h NmapOps.h NmapOutputTable.h nmap_tty.h nmap_winconfig.h osscan2.h osscan.h output.h payload.h portlist.h portreasons.h probespec.h protocols.h scan_engine.h scan_engine_connect.h scan_engine_raw.h service_scan.h scan_lists.h services.h string_pool.h NewTargets.h TargetGroup.h Target.h targets.h tcpip.h timing.h traceroute.h utils.h xml.h control_plane_events.h nmap_service.h $(NSE_HDRS)
 
-OBJS = charpool.o FingerPrintResults.o FPEngine.o FPModel.o idle_scan.o MACLookup.o nmap_dns.o nmap_error.o nmap.o nmap_ftp.o NmapOps.o NmapOutputTable.o nmap_tty.o osscan2.o osscan.o output.o payload.o portlist.o portreasons.o protocols.o scan_engine.o scan_engine_connect.o scan_engine_raw.o scan_lists.o service_scan.o services.o string_pool.o NewTargets.o TargetGroup.o Target.o targets.o tcpip.o timing.o traceroute.o utils.o xml.o $(NSE_OBJS)
+OBJS = charpool.o FingerPrintResults.o FPEngine.o FPModel.o idle_scan.o MACLookup.o nmap_dns.o nmap_error.o nmap.o nmap_ftp.o NmapOps.o NmapOutputTable.o nmap_tty.o osscan2.o osscan.o output.o payload.o portlist.o portreasons.o protocols.o scan_engine.o scan_engine_connect.o scan_engine_raw.o scan_lists.o service_scan.o services.o string_pool.o NewTargets.o TargetGroup.o Target.o targets.o tcpip.o timing.o traceroute.o utils.o xml.o control_plane_events.o nmap_service.o $(NSE_OBJS)
 
 # %.o : %.cc -- nope this is a GNU extension
 .cc.o:
@@ -129,7 +139,7 @@ $(TARGET): build-netutil @LIBLINEAR_BUILD@ @PCAP_BUILD@ @LIBSSH2_BUILD@ @ZLIB_BU
 	$(OBJS) main.o
 	@echo Compiling nmap
 	rm -f $@
-	$(CXX) $(LDFLAGS) -o $@ $(OBJS) main.o $(LIBS)
+	$(CXX) $(LDFLAGS) -o $@ $(OBJS) main.o $(LIBS) $(CONTROL_PLANE_LIBS)
 
 build-pcre: $(LIBPCREDIR)/Makefile
 	@echo Compiling libpcre; cd $(LIBPCREDIR) && $(MAKE)
@@ -176,6 +186,92 @@ build-%: %/Makefile
 # Make a statically compiled binary for portability between distributions
 static:
 	$(MAKE) STATIC=-static
+
+preflight-daemon-portable:
+	@missing_tools=""; \
+	for cmd in "$(CXX)" make dpkg-deb fakeroot ar ranlib; do \
+		command -v "$$cmd" >/dev/null 2>&1 || missing_tools="$$missing_tools $$cmd"; \
+	done; \
+	if [ -n "$$missing_tools" ]; then \
+		echo "Missing required tools for daemon portable build/package:$$missing_tools"; \
+		echo "Install required tools and rerun this target."; \
+		exit 2; \
+	fi
+	@for lib in libstdc++.a libgcc.a libboost_json.a; do \
+		path=`$(CXX) -print-file-name=$$lib`; \
+		if [ "$$path" = "$$lib" ] || [ ! -f "$$path" ]; then \
+			echo "Missing static library for portable profile: $$lib"; \
+			echo "Install corresponding development package and rerun."; \
+			exit 2; \
+		fi; \
+	done
+	@echo "Portable daemon preflight checks passed."
+
+prepare-pcap-portable:
+	@if [ -f "$(LIBPCAPDIR)/config.h" ] && grep -q '^#define PCAP_SUPPORT_RDMASNIFF 1' "$(LIBPCAPDIR)/config.h"; then \
+		echo "Reconfiguring libpcap for portable profile (RDMA disabled)."; \
+		cd "$(LIBPCAPDIR)" && $(MAKE) clean && \
+		./configure --disable-option-checking --prefix=/usr/local --disable-dbus --disable-rdma --cache-file=/dev/null --srcdir=.; \
+	fi
+
+build-daemon-portable: preflight-daemon-portable prepare-pcap-portable
+	$(MAKE) nmap \
+		CPPFLAGS="$(PORTABLE_CPPFLAGS)" \
+		LDFLAGS="$(PORTABLE_LDFLAGS)" \
+		LIBS="$(PORTABLE_LIBS)" \
+		CONTROL_PLANE_LIBS="$(PORTABLE_CONTROL_PLANE_LIBS)"
+
+check-daemon-portable: build-daemon-portable
+	@file ./nmap
+	@ldd ./nmap
+
+package-daemon-deb: preflight-daemon-portable build-daemon-portable
+	./packaging/debian-daemon/build_deb.sh
+
+check-artifact-hygiene:
+	"$(ARTIFACT_HYGIENE_SCRIPT)"
+
+preflight-valgrind:
+	@missing_tools=""; \
+	for cmd in valgrind node npm timeout; do \
+		command -v "$$cmd" >/dev/null 2>&1 || missing_tools="$$missing_tools $$cmd"; \
+	done; \
+	if [ -n "$$missing_tools" ]; then \
+		echo "Missing required tools for valgrind gate:$$missing_tools"; \
+		echo "Install required tools and rerun this target."; \
+		exit 2; \
+	fi
+	@if [ ! -f "$(VALGRIND_SUPPRESSIONS)" ]; then \
+		echo "Missing valgrind suppressions file: $(VALGRIND_SUPPRESSIONS)"; \
+		echo "Restore or create suppressions file and rerun."; \
+		exit 2; \
+	fi
+	@if [ ! -d "./nmap_extended_ts_client/node_modules" ]; then \
+		echo "TypeScript dependencies missing in ./nmap_extended_ts_client"; \
+		echo "Run 'cd ./nmap_extended_ts_client && npm install' and rerun."; \
+		exit 2; \
+	fi
+	@echo "Valgrind preflight checks passed."
+
+check-valgrind-memcheck: build-daemon-portable preflight-valgrind
+	@mkdir -p "$(VALGRIND_LOG_DIR)"
+	VALGRIND_LOG_DIR="$(VALGRIND_LOG_DIR)/memcheck" \
+	VALGRIND_SUPPRESSIONS="$(VALGRIND_SUPPRESSIONS)" \
+	VALGRIND_SMOKE_TARGETS="$(VALGRIND_SMOKE_TARGETS)" \
+	"$(VALGRIND_GATE_SCRIPT)" memcheck
+
+check-valgrind-helgrind: build-daemon-portable preflight-valgrind
+	@mkdir -p "$(VALGRIND_LOG_DIR)"
+	VALGRIND_LOG_DIR="$(VALGRIND_LOG_DIR)/helgrind" \
+	VALGRIND_SUPPRESSIONS="$(VALGRIND_SUPPRESSIONS)" \
+	VALGRIND_SMOKE_TARGETS="$(VALGRIND_SMOKE_TARGETS)" \
+	"$(VALGRIND_GATE_SCRIPT)" helgrind
+
+check-valgrind: check-valgrind-memcheck check-valgrind-helgrind
+	@echo "Valgrind quality gate passed."
+
+package-daemon-deb-gated: check-valgrind package-daemon-deb
+	@echo "Gated daemon package build completed."
 
 debug:
 	$(MAKE) DBGFLAGS="-O0 -g -pg -ftest-coverage -fprofile-arcs"
@@ -349,7 +445,7 @@ $(ZENMAPDIR)/zenmapCore/Version.py $(ZENMAPDIR)/share/zenmap/config/zenmap_versi
 	cd $(ZENMAPDIR) && $(PYTHON) install_scripts/utils/version_update.py "$(NMAP_VERSION)"
 
 tests/%: tests/%.cc $(OBJS)
-	$(CXX) -o $@ $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) $(OBJS) $(LIBS) $<
+	$(CXX) -o $@ $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) $(OBJS) $(LIBS) $(CONTROL_PLANE_LIBS) $<
 
 build-zenmap: $(ZENMAPDIR)/pyproject.toml $(ZENMAPDIR)/zenmapCore/Version.py
 	$(PYTHON) -m build $(ZENMAPDIR)/
@@ -521,4 +617,4 @@ whois db2-discover http-crossdomainxml http-email-harvest \
 http-wordpress-plugins http-wp-plugins smb-check-vulns \
 )
 
-.PHONY: all clean install uninstall check static debug prerelease release-tarballs release-rpms web distclean lua-format
+.PHONY: all clean install uninstall check static debug prerelease release-tarballs release-rpms web distclean lua-format preflight-daemon-portable build-daemon-portable check-daemon-portable package-daemon-deb check-artifact-hygiene preflight-valgrind check-valgrind-memcheck check-valgrind-helgrind check-valgrind package-daemon-deb-gated

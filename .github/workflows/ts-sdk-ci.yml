@@ -1,0 +1,49 @@
+name: ts-sdk-ci
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "nmap_extended_ts_client/**"
+      - ".github/workflows/ts-sdk-ci.yml"
+  pull_request:
+    paths:
+      - "nmap_extended_ts_client/**"
+      - ".github/workflows/ts-sdk-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node_version:
+          - "20"
+          - "22"
+    defaults:
+      run:
+        working-directory: nmap_extended_ts_client
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node_version }}
+          cache: npm
+          cache-dependency-path: nmap_extended_ts_client/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: SDK preflight
+        run: npm run preflight:sdk
+      - name: Build
+        run: npm run build
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Tests
+        run: npm run test
+      - name: API report gate
+        run: npm run check:api
+      - name: Pack smoke test
+        run: npm run pack:smoke

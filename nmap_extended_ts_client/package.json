@@ -1,0 +1,83 @@
+{
+  "name": "@opsimathically/nmap-extended-sdk",
+  "version": "1.0.0",
+  "description": "TypeScript websocket SDK for the nmap_extended control plane",
+  "license": "UNLICENSED",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/opsimathically/nmap_extended.git",
+    "directory": "nmap_extended_ts_client"
+  },
+  "homepage": "https://github.com/opsimathically/nmap_extended/tree/master/nmap_extended_ts_client",
+  "bugs": {
+    "url": "https://github.com/opsimathically/nmap_extended/issues"
+  },
+  "keywords": [
+    "nmap",
+    "websocket",
+    "sdk",
+    "typescript",
+    "security"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.mjs"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.mjs",
+      "require": "./dist/cli.cjs",
+      "default": "./dist/cli.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "nmap-extended-sdk-debug": "./dist/cli.cjs"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "preflight:sdk": "node ./scripts/preflight-sdk.mjs",
+    "build:clean": "rm -rf dist dist-tests temp",
+    "build:sdk": "tsup --config tsup.config.ts",
+    "build:tests": "tsc -p tsconfig.test.json",
+    "build": "npm run build:clean && npm run build:sdk && npm run build:tests",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "test": "npm run build && node --test dist-tests/tests/*.test.js",
+    "check:api": "npm run build:sdk && api-extractor run --config ./api-extractor.json --verbose",
+    "check:api:update": "npm run build:sdk && api-extractor run --config ./api-extractor.json --local",
+    "pack:smoke": "npm run build:sdk && npm pack --dry-run",
+    "release:prepare": "npm run preflight:sdk && npm run build && npm run typecheck && npm run test && npm run check:api && npm run pack:smoke && changeset version",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "changeset publish",
+    "debug": "npm run build:sdk && node dist/cli.cjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.7",
+    "@microsoft/api-extractor": "^7.52.11",
+    "@types/node": "^22.19.15",
+    "@types/ws": "^8.18.1",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.3"
+  }
+}

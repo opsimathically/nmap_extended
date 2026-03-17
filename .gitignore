@@ -18,6 +18,9 @@ libtool
 .svn/
 .dirstamp
 stamp-h1
+/dist/
+/service_config.json
+/service_config.*.json
 /libdnet-stripped/dnet-config
 /nbase/nbase_config.h
 /ncat/ncat

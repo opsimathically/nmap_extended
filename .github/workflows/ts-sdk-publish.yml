@@ -1,0 +1,84 @@
+name: ts-sdk-publish
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "sdk-v*"
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release_from_main:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: nmap_extended_ts_client/package-lock.json
+      - name: Install dependencies
+        working-directory: nmap_extended_ts_client
+        run: npm ci
+      - name: Release checks
+        working-directory: nmap_extended_ts_client
+        run: |
+          npm run preflight:sdk
+          npm run build
+          npm run typecheck
+          npm run test
+          npm run check:api
+          npm run pack:smoke
+      - name: Version or publish via changesets
+        uses: changesets/action@v1
+        with:
+          cwd: nmap_extended_ts_client
+          version: npm run version-packages
+          publish: npm run release
+          commit: "chore(sdk): version packages"
+          title: "chore(sdk): version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  release_from_tag:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: nmap_extended_ts_client/package-lock.json
+      - name: Install dependencies
+        working-directory: nmap_extended_ts_client
+        run: npm ci
+      - name: Release checks
+        working-directory: nmap_extended_ts_client
+        run: |
+          npm run preflight:sdk
+          npm run build
+          npm run typecheck
+          npm run test
+          npm run check:api
+          npm run pack:smoke
+      - name: Publish existing version
+        working-directory: nmap_extended_ts_client
+        run: npm run release
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

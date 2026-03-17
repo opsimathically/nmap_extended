@@ -80,6 +80,7 @@
 #include "utils.h"
 #include "nmap_error.h"
 #include "output.h"
+#include "control_plane_events.h"
 
 #include "struct_ip.h"
 
@@ -90,6 +91,7 @@
 #include <math.h>
 #include <list>
 #include <map>
+#include <string>
 
 extern NmapOps o;
 
@@ -1816,6 +1818,11 @@ static bool pingprobe_is_better(const probespec *new_probe, int new_state,
 
 static bool ultrascan_host_pspec_update(const UltraScanInfo *USI, HostScanStats *hss,
                                         const probespec *pspec, int newstate);
+static void cp_emit_port_state_event(const HostScanStats *hss,
+                                     u16 portno,
+                                     u8 proto,
+                                     int oldstate,
+                                     int newstate);
 
 /* Like ultrascan_port_probe_update(), except it is called with just a
    probespec rather than a whole UltraProbe.  Returns true if the port
@@ -1892,7 +1899,11 @@ static bool ultrascan_port_pspec_update(const UltraScanInfo *USI,
     }
   }
 
-  return oldstate != newstate;
+  int finalstate = hss->target->ports.getPortState(portno, proto);
+  if (finalstate != oldstate)
+    cp_emit_port_state_event(hss, portno, proto, oldstate, finalstate);
+
+  return finalstate != oldstate;
 }
 
 /* Boost the scan delay for this host, usually because too many packet
@@ -1984,6 +1995,73 @@ static const char *readhoststate(int state) {
   return NULL;
 }
 
+static void cp_emit_host_state_event(const HostScanStats *hss, int oldstate, int newstate) {
+  if (!cp_is_worker_mode())
+    return;
+
+  const char *old_state_str = readhoststate(oldstate);
+  const char *new_state_str = readhoststate(newstate);
+  std::string escaped_host = cp_json_escape(hss->target->targetipstr());
+  std::string escaped_old = cp_json_escape(old_state_str ? old_state_str : "UNKNOWN");
+  std::string escaped_new = cp_json_escape(new_state_str ? new_state_str : "UNKNOWN");
+
+  char payload[512];
+  Snprintf(payload, sizeof(payload),
+           "{\"host\":\"%s\",\"old_state\":\"%s\",\"new_state\":\"%s\"}",
+           escaped_host.c_str(),
+           escaped_old.c_str(),
+           escaped_new.c_str());
+  cp_emit_event_json("host_state_changed", payload);
+
+  if (newstate == HOST_UP) {
+    char discovered_payload[256];
+    Snprintf(discovered_payload, sizeof(discovered_payload),
+             "{\"host\":\"%s\"}",
+             escaped_host.c_str());
+    cp_emit_event_json("host_discovered", discovered_payload);
+  }
+}
+
+static const char *cp_proto_to_string(u8 proto) {
+  switch (proto) {
+  case IPPROTO_TCP:
+    return "tcp";
+  case IPPROTO_UDP:
+    return "udp";
+  case IPPROTO_SCTP:
+    return "sctp";
+  case IPPROTO_IP:
+    return "ip";
+  default:
+    return "unknown";
+  }
+}
+
+static void cp_emit_port_state_event(const HostScanStats *hss,
+                                     u16 portno,
+                                     u8 proto,
+                                     int oldstate,
+                                     int newstate) {
+  if (!cp_is_worker_mode())
+    return;
+
+  std::string escaped_host = cp_json_escape(hss->target->targetipstr());
+  std::string escaped_old = cp_json_escape(statenum2str(oldstate));
+  std::string escaped_new = cp_json_escape(statenum2str(newstate));
+  std::string escaped_proto = cp_json_escape(cp_proto_to_string(proto));
+
+  char payload[640];
+  Snprintf(payload, sizeof(payload),
+           "{\"host\":\"%s\",\"port\":%u,\"protocol\":\"%s\","
+           "\"old_state\":\"%s\",\"new_state\":\"%s\"}",
+           escaped_host.c_str(),
+           (unsigned int) portno,
+           escaped_proto.c_str(),
+           escaped_old.c_str(),
+           escaped_new.c_str());
+  cp_emit_event_json("port_state_changed", payload);
+}
+
 /* Update state of the host in hss based on its current state and newstate.
    Returns true if the state was changed. */
 static bool ultrascan_host_pspec_update(const UltraScanInfo *USI, HostScanStats *hss,
@@ -2001,7 +2079,11 @@ static bool ultrascan_host_pspec_update(const UltraScanInfo *USI, HostScanStats 
       write_xml_hosthint(hss->target);
     }
   }
-  return hss->target->flags != oldstate;
+  bool changed = hss->target->flags != oldstate;
+  if (changed)
+    cp_emit_host_state_event(hss, oldstate, hss->target->flags);
+
+  return changed;
 }
 
 static void ultrascan_host_timeout_init(const UltraScanInfo *USI, HostScanStats *hss) {

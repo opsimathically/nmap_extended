@@ -63,11 +63,15 @@
 
 #include <signal.h>
 #include <locale.h>
+#include <string.h>
+#include <vector>
 
 #include "nmap.h"
 #include "NmapOps.h"
 #include "utils.h"
 #include "nmap_error.h"
+#include "nmap_service.h"
+#include "control_plane_events.h"
 
 #ifdef MTRACE
 #include "mcheck.h"
@@ -102,6 +106,55 @@ extern NmapOps o;  /* option structure */
 
 extern void set_program_name(const char *name);
 
+static bool has_arg(int argc, char *argv[], const char *needle) {
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], needle) == 0)
+      return true;
+  }
+  return false;
+}
+
+static bool has_daemon_mode_arg(int argc, char *argv[]) {
+  static const char *daemon_flags[] = {
+    "--service",
+    "--service-config",
+    "--service-config-generate",
+    "--force",
+    "--bind",
+    "--port",
+    "--max-event-buffer",
+    "--max-active-scans",
+    "--cancel-grace-ms",
+    "--token",
+    "--token-file"
+  };
+
+  for (int i = 1; i < argc; i++) {
+    for (size_t j = 0; j < sizeof(daemon_flags) / sizeof(daemon_flags[0]); j++) {
+      if (strcmp(argv[i], daemon_flags[j]) == 0)
+        return true;
+    }
+  }
+
+  return false;
+}
+
+static int run_service_worker(int argc, char *argv[]) {
+  cp_set_worker_mode(true);
+
+  std::vector<char *> filtered_argv;
+  filtered_argv.reserve(argc);
+  filtered_argv.push_back(argv[0]);
+
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--service-worker") == 0)
+      continue;
+    filtered_argv.push_back(argv[i]);
+  }
+
+  return nmap_main((int) filtered_argv.size(), filtered_argv.data());
+}
+
 int main(int argc, char *argv[]) {
   /* The "real" main is nmap_main().  This function hijacks control at the
      beginning to do the following:
@@ -118,6 +171,12 @@ int main(int argc, char *argv[]) {
 
   o.locale = strdup(setlocale(LC_CTYPE, NULL));
   set_program_name(argv[0]);
+
+  if (has_arg(argc, argv, "--service-worker"))
+    return run_service_worker(argc, argv);
+
+  if (has_daemon_mode_arg(argc, argv))
+    return nmap_service_main(argc, argv);
 
 #ifdef __amigaos__
         if(!OpenLibs()) {
