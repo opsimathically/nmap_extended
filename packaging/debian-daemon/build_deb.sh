@@ -13,6 +13,11 @@ if [ ! -x "$ROOT_DIR/nmap" ]; then
     exit 2
 fi
 
+if ! command -v objdump >/dev/null 2>&1; then
+    echo "Missing required tool: objdump" >&2
+    exit 2
+fi
+
 RAW_VERSION=$("$ROOT_DIR/nmap" --version | sed -n '1s/^Nmap version \([^ ]*\).*/\1/p')
 DEB_VERSION=$(printf '%s' "$RAW_VERSION" | tr '[:upper:]' '[:lower:]' | sed 's/[^0-9a-z.+:~-]/./g')
 if [ -z "$DEB_VERSION" ]; then
@@ -21,6 +26,10 @@ fi
 
 ARCH=$(dpkg --print-architecture 2>/dev/null || echo amd64)
 OUT_DEB="$DIST_DIR/${PKG_NAME}_${DEB_VERSION}_${ARCH}.deb"
+REQUIRED_GLIBC=$(objdump -T "$ROOT_DIR/nmap" 2>/dev/null | sed -n 's/.*GLIBC_\([0-9][0-9.]*\).*/\1/p' | sort -V | tail -n 1)
+if [ -z "$REQUIRED_GLIBC" ]; then
+    REQUIRED_GLIBC="2.17"
+fi
 
 rm -rf "$PKG_ROOT"
 mkdir -p "$DEBIAN_DIR" \
@@ -55,7 +64,7 @@ Section: net
 Priority: optional
 Architecture: $ARCH
 Maintainer: nmap_extended maintainer <noreply@example.invalid>
-Depends: libc6, libstdc++6
+Depends: libc6 (>= $REQUIRED_GLIBC), libstdc++6
 Recommends: systemd
 Description: Nmap Extended daemon package
  Conflict-free daemon-focused packaging for nmap_extended control-plane service mode.

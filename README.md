@@ -25,7 +25,9 @@ Upstream Nmap scan capabilities and behavior remain available via the built engi
 | Diagnostics | `get_daemon_diagnostics` and `get_job_diagnostics` over websocket |
 | Transport security | Native `wss://` support with optional mTLS (`tls.require_client_cert`) |
 | Portable build | `make build-daemon-portable`, `make check-daemon-portable` |
-| Debian package | `make package-daemon-deb` / `make package-daemon-deb-gated` -> `dist/nmap-extended-daemon_<version>_<arch>.deb` |
+| Cross-distro portable artifact | `make build-daemon-musl-portable` -> fully static `musl` tarball |
+| Debian package (glibc) | `make package-daemon-deb` / `make package-daemon-deb-gated` -> `dist/nmap-extended-daemon_<version>_<arch>.deb` |
+| Debian package (musl-static core) | `make package-daemon-deb-musl` / `make package-daemon-deb-musl-gated` -> `dist/nmap-extended-daemon-musl_<version>_<arch>.deb` |
 | Installed binary name | `nmap_extended` (no `/usr/bin/nmap` conflict) |
 | Valgrind gate | `check-valgrind-memcheck`, `check-valgrind-helgrind`, `check-valgrind` (blocking gate) |
 | Websocket fuzz gate | `check-fuzz-valgrind*` (stateful API fuzzing across `ws`/`wss`/`wss+mTLS`) |
@@ -58,7 +60,30 @@ make package-daemon-deb
 
 # Build Debian package with mandatory valgrind gate
 make package-daemon-deb-gated
+
+# Build Debian package that stages the fully static musl daemon binary
+make package-daemon-deb-musl
+
+# Build musl-static Debian package with mandatory valgrind gate
+make package-daemon-deb-musl-gated
 ```
+
+### Maximum Portability Build (Cross-Distro)
+
+For "copy and run on most x86-64 Linux distributions", use the fully static musl bundle:
+
+```bash
+make preflight-daemon-musl-portable
+make build-daemon-musl-portable
+```
+
+Output artifact:
+- `dist/portable-musl/nmap_extended-musl-x86_64.tar.gz`
+
+Notes:
+- this path uses a containerized Alpine/musl toolchain,
+- resulting `nmap_extended.bin` is expected to be fully static (`ldd` reports not a dynamic executable),
+- this is the preferred path for distro-agnostic binary portability.
 
 ### Valgrind Quality Gate
 
@@ -542,16 +567,24 @@ Practical troubleshooting patterns:
 
 ### Debian Package Lifecycle
 
-Build package:
+Build package (glibc profile):
 
 ```bash
 make package-daemon-deb
+```
+
+Build package (musl-static daemon core):
+
+```bash
+make package-daemon-deb-musl
 ```
 
 Install package:
 
 ```bash
 sudo dpkg -i dist/nmap-extended-daemon_*.deb
+# or
+sudo dpkg -i dist/nmap-extended-daemon-musl_*.deb
 ```
 
 Verify installed paths:
@@ -578,6 +611,10 @@ Remove package:
 sudo apt remove nmap-extended-daemon
 # or
 sudo dpkg -r nmap-extended-daemon
+
+sudo apt remove nmap-extended-daemon-musl
+# or
+sudo dpkg -r nmap-extended-daemon-musl
 ```
 
 ### Security Guidance (Dev vs Production)
@@ -658,6 +695,8 @@ Websocket fuzz gate behavior:
 - Scheduler uses worker-process isolation (v1) rather than in-process concurrent scan execution.
 - Event stream buffering is bounded by config; overflow is signaled via explicit events.
 - TypeScript SDK public API is root-entrypoint based; deep internal imports are intentionally unsupported.
+- Two package modes exist: glibc (`nmap-extended-daemon`) and musl-static core (`nmap-extended-daemon-musl`).
+- `nmap-extended-daemon-musl` conflicts with `nmap-extended-daemon` by design; choose one package mode per host.
 
 ## Upstream References
 

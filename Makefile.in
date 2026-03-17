@@ -50,10 +50,17 @@ STATIC =
 LDFLAGS = @LDFLAGS@ $(DBGFLAGS) $(STATIC)
 LIBS =  @LIBNSOCK_LIBS@ @LIBNBASE_LIBS@ @LIBPCRE_LIBS@ @LIBPCAP_LIBS@ $(LIBSSH2_LIBS) $(OPENSSL_LIBS) $(ZLIB_LIBS) libnetutil/libnetutil.a @LIBDNET_LIBS@ @LIBLUA_LIBS@ @LIBLINEAR_LIBS@ @LIBS@ -libverbs
 CONTROL_PLANE_LIBS = -lboost_system -lboost_json -lpthread
-PORTABLE_CPPFLAGS = $(CPPFLAGS) -DBOOST_ERROR_CODE_HEADER_ONLY
+NMAP_LINK_LDFLAGS = $(LDFLAGS)
+NMAP_LINK_LIBS = $(LIBS)
+NMAP_LINK_CONTROL_PLANE_LIBS = $(CONTROL_PLANE_LIBS)
+PORTABLE_EXTRA_CXXFLAGS = -DBOOST_ERROR_CODE_HEADER_ONLY
 PORTABLE_LDFLAGS = $(LDFLAGS) -static-libstdc++ -static-libgcc
 PORTABLE_LIBS = $(filter-out -libverbs,$(LIBS))
 PORTABLE_CONTROL_PLANE_LIBS = -Wl,-Bstatic -lboost_json -Wl,-Bdynamic -lpthread
+PORTABLE_GLIBC_MAX ?= 2.35
+GLIBC_COMPAT_CHECK_SCRIPT = ./packaging/debian-daemon/check_glibc_compat.sh
+PORTABLE_MUSL_BUILD_SCRIPT = ./packaging/portable/build_musl_bundle.sh
+PORTABLE_MUSL_IMAGE ?= alpine:3.20
 VALGRIND_GATE_SCRIPT = ./packaging/valgrind/run_valgrind_gate.sh
 VALGRIND_FUZZ_GATE_SCRIPT = ./packaging/valgrind/run_valgrind_fuzz_gate.sh
 VALGRIND_SUPPRESSIONS = ./packaging/valgrind/nmap_extended.supp
@@ -145,7 +152,7 @@ $(TARGET): build-netutil @LIBLINEAR_BUILD@ @PCAP_BUILD@ @LIBSSH2_BUILD@ @ZLIB_BU
 	$(OBJS) main.o
 	@echo Compiling nmap
 	rm -f $@
-	$(CXX) $(LDFLAGS) -o $@ $(OBJS) main.o $(LIBS) $(CONTROL_PLANE_LIBS)
+	$(CXX) $(NMAP_LINK_LDFLAGS) -o $@ $(OBJS) main.o $(NMAP_LINK_LIBS) $(NMAP_LINK_CONTROL_PLANE_LIBS)
 
 build-pcre: $(LIBPCREDIR)/Makefile
 	@echo Compiling libpcre; cd $(LIBPCREDIR) && $(MAKE)
@@ -195,7 +202,7 @@ static:
 
 preflight-daemon-portable:
 	@missing_tools=""; \
-	for cmd in "$(CXX)" make dpkg-deb fakeroot ar ranlib; do \
+	for cmd in "$(CXX)" make dpkg-deb fakeroot ar ranlib objdump; do \
 		command -v "$$cmd" >/dev/null 2>&1 || missing_tools="$$missing_tools $$cmd"; \
 	done; \
 	if [ -n "$$missing_tools" ]; then \
@@ -211,7 +218,33 @@ preflight-daemon-portable:
 			exit 2; \
 		fi; \
 	done
+	@if [ ! -x "$(GLIBC_COMPAT_CHECK_SCRIPT)" ]; then \
+		echo "Missing executable compatibility check script: $(GLIBC_COMPAT_CHECK_SCRIPT)"; \
+		echo "Restore it and rerun."; \
+		exit 2; \
+	fi
 	@echo "Portable daemon preflight checks passed."
+
+preflight-daemon-musl-portable:
+	@missing_tools=""; \
+	if command -v docker >/dev/null 2>&1; then \
+		:; \
+	elif command -v podman >/dev/null 2>&1; then \
+		:; \
+	else \
+		missing_tools=" docker_or_podman"; \
+	fi; \
+	if [ -n "$$missing_tools" ]; then \
+		echo "Missing required tools for musl portable build:$$missing_tools"; \
+		echo "Install Docker or Podman and rerun."; \
+		exit 2; \
+	fi
+	@if [ ! -x "$(PORTABLE_MUSL_BUILD_SCRIPT)" ]; then \
+		echo "Missing executable musl build script: $(PORTABLE_MUSL_BUILD_SCRIPT)"; \
+		echo "Restore it and rerun."; \
+		exit 2; \
+	fi
+	@echo "Musl portable preflight checks passed."
 
 prepare-pcap-portable:
 	@if [ -f "$(LIBPCAPDIR)/config.h" ] && grep -q '^#define PCAP_SUPPORT_RDMASNIFF 1' "$(LIBPCAPDIR)/config.h"; then \
@@ -222,17 +255,44 @@ prepare-pcap-portable:
 
 build-daemon-portable: preflight-daemon-portable prepare-pcap-portable
 	$(MAKE) nmap \
-		CPPFLAGS="$(PORTABLE_CPPFLAGS)" \
-		LDFLAGS="$(PORTABLE_LDFLAGS)" \
-		LIBS="$(PORTABLE_LIBS)" \
-		CONTROL_PLANE_LIBS="$(PORTABLE_CONTROL_PLANE_LIBS)"
+		CXXFLAGS="$(CXXFLAGS) $(PORTABLE_EXTRA_CXXFLAGS)" \
+		NMAP_LINK_LDFLAGS="$(PORTABLE_LDFLAGS)" \
+		NMAP_LINK_LIBS="$(PORTABLE_LIBS)" \
+		NMAP_LINK_CONTROL_PLANE_LIBS="$(PORTABLE_CONTROL_PLANE_LIBS)"
 
-check-daemon-portable: build-daemon-portable
+check-daemon-glibc-compat: build-daemon-portable
+	"$(GLIBC_COMPAT_CHECK_SCRIPT)" ./nmap "$(PORTABLE_GLIBC_MAX)"
+
+check-daemon-portable: build-daemon-portable check-daemon-glibc-compat
 	@file ./nmap
 	@ldd ./nmap
 
-package-daemon-deb: preflight-daemon-portable build-daemon-portable
+package-daemon-deb: preflight-daemon-portable build-daemon-portable check-daemon-glibc-compat
 	./packaging/debian-daemon/build_deb.sh
+
+build-daemon-musl-portable: preflight-daemon-musl-portable
+	PORTABLE_MUSL_IMAGE="$(PORTABLE_MUSL_IMAGE)" \
+	"$(PORTABLE_MUSL_BUILD_SCRIPT)"
+
+preflight-daemon-musl-package:
+	@missing_tools=""; \
+	for cmd in dpkg-deb fakeroot ldd; do \
+		command -v "$$cmd" >/dev/null 2>&1 || missing_tools="$$missing_tools $$cmd"; \
+	done; \
+	if [ -n "$$missing_tools" ]; then \
+		echo "Missing required tools for musl Debian package build:$$missing_tools"; \
+		echo "Install required tools and rerun this target."; \
+		exit 2; \
+	fi
+	@if [ ! -x "./packaging/debian-daemon/build_deb_musl.sh" ]; then \
+		echo "Missing executable musl Debian package script: ./packaging/debian-daemon/build_deb_musl.sh"; \
+		echo "Restore it and rerun."; \
+		exit 2; \
+	fi
+	@echo "Musl Debian package preflight checks passed."
+
+package-daemon-deb-musl: preflight-daemon-musl-portable preflight-daemon-musl-package build-daemon-musl-portable
+	./packaging/debian-daemon/build_deb_musl.sh
 
 check-artifact-hygiene:
 	"$(ARTIFACT_HYGIENE_SCRIPT)"
@@ -332,6 +392,9 @@ check-fuzz-valgrind-nightly: build-daemon-portable preflight-fuzz-valgrind
 
 package-daemon-deb-gated: check-valgrind package-daemon-deb
 	@echo "Gated daemon package build completed."
+
+package-daemon-deb-musl-gated: check-valgrind package-daemon-deb-musl
+	@echo "Gated musl daemon package build completed."
 
 debug:
 	$(MAKE) DBGFLAGS="-O0 -g -pg -ftest-coverage -fprofile-arcs"
@@ -677,4 +740,4 @@ whois db2-discover http-crossdomainxml http-email-harvest \
 http-wordpress-plugins http-wp-plugins smb-check-vulns \
 )
 
-.PHONY: all clean install uninstall check static debug prerelease release-tarballs release-rpms web distclean lua-format preflight-daemon-portable build-daemon-portable check-daemon-portable package-daemon-deb check-artifact-hygiene preflight-valgrind preflight-fuzz-valgrind check-valgrind-memcheck check-valgrind-helgrind check-valgrind check-fuzz-valgrind-memcheck check-fuzz-valgrind-helgrind check-fuzz-valgrind check-fuzz-valgrind-nightly package-daemon-deb-gated
+.PHONY: all clean install uninstall check static debug prerelease release-tarballs release-rpms web distclean lua-format preflight-daemon-portable preflight-daemon-musl-portable preflight-daemon-musl-package build-daemon-portable build-daemon-musl-portable check-daemon-glibc-compat check-daemon-portable package-daemon-deb package-daemon-deb-musl check-artifact-hygiene preflight-valgrind preflight-fuzz-valgrind check-valgrind-memcheck check-valgrind-helgrind check-valgrind check-fuzz-valgrind-memcheck check-fuzz-valgrind-helgrind check-fuzz-valgrind check-fuzz-valgrind-nightly package-daemon-deb-gated package-daemon-deb-musl-gated
