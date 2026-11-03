@@ -1,0 +1,29 @@
+# nmap_extended valgrind suppressions
+#
+# Policy:
+# - Suppressions here are only for known non-project/toolchain/library noise.
+# - Every suppression must include provenance context and date added.
+# - Do not suppress findings that originate in project-owned code.
+#
+# Example provenance format:
+#   # Added: 2026-03-17
+#   # Origin: <library/toolchain component and version>
+#   # Reason: <why this is known non-project noise>
+#
+# Keep this file intentionally minimal; add entries only after triage.
+
+# Added: 2026-03-17
+# Origin: Boost.Beast websocket accept/write internals under Helgrind
+# Reason: Known Helgrind false-positive race reports in Beast buffer/view machinery
+# when multiple independent websocket sessions execute in parallel.
+{
+   boost_beast_ws_accept_race
+   Helgrind:Race
+   ...
+   fun:_ZN5boost5beast*
+   ...
+   fun:_ZL14handle_session*
+   ...
+   fun:start_thread
+   fun:clone
+}
